@@ -8,10 +8,8 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   endif()
 endif()
 
-
 project(vitacompanion)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
-
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -Wall -O3 -fno-pic -fno-PIC -std=gnu99")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fno-rtti -fno-exceptions")
@@ -37,7 +35,6 @@ add_executable(vitacompanion
         src/cmd_definitions.c
         src/cmd_definitions.h)
 
-
 target_link_libraries(vitacompanion
   taipool
   taihen_stub
@@ -50,10 +47,16 @@ target_link_libraries(vitacompanion
   SceSysmodule_stub_weak
   SceKernelThreadMgr_stub_weak
   SceIofilemgr_stub_weak
-  SceRtc_stub_weak
+  SceRtc_stub
   SceAppMgr_stub
   ScePower_stub
+  SceDisplay_stub
+  SceKernelModulemgr_stub    # needed for sceKernelGetModuleInfo
 )
+
+
+
+
 
 set_target_properties(vitacompanion
   PROPERTIES LINK_FLAGS "-nostdlib"

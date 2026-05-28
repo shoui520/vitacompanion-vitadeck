@@ -18,3 +18,5 @@ void cmd_launch(char **arg_list, size_t arg_count, char *res_msg);
 void cmd_kill(char **arg_list, size_t arg_count, char *res_msg);
 void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg);
 void cmd_screen(char **arg_list, size_t arg_count, char *res_msg);
+void cmd_battery(char **arg_list, size_t arg_count, char *res_msg);
+void cmd_screenshot(char **arg_list, size_t arg_count, char *res_msg);
