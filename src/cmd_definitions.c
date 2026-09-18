@@ -5,11 +5,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ftpvita.h>
 // #include <ctype.h> <-- REMOVED to prevent linker errors
 
-#include <vitasdk.h>
-
 // PS Vita System Headers
+#include <psp2/appmgr.h>
 #include <psp2/display.h>
 #include <psp2/kernel/clib.h>
 #include <psp2/io/fcntl.h>
@@ -17,32 +17,41 @@
 #include <psp2/io/dirent.h>
 #include <psp2/rtc.h>
 #include <psp2/kernel/threadmgr.h> 
+#include <psp2/power.h>
 
 #include <taihen.h>
 #include <psp2/kernel/modulemgr.h>
 
 #define COUNT_OF(arr) (sizeof(arr) / sizeof(arr[0]))
 
-// --- Forward Declarations ---
-void cmd_help(char **arg_list, size_t arg_count, char *res_msg);
-void cmd_destroy(char **arg_list, size_t arg_count, char *res_msg);
-void cmd_launch(char **arg_list, size_t arg_count, char *res_msg);
-void cmd_kill(char **arg_list, size_t arg_count, char *res_msg);
-void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg);
-void cmd_screen(char **arg_list, size_t arg_count, char *res_msg);
-void cmd_battery(char **arg_list, size_t arg_count, char *res_msg);
-void cmd_screenshot(char **arg_list, size_t arg_count, char *res_msg);
-
 const cmd_definition cmd_definitions[] = {
+    {.name = "version",    .description = "Show protocol and hardening version", .arg_count = 0, .executor = &cmd_version},
     {.name = "help",       .description = "Display this help screen",          .arg_count = 0, .executor = &cmd_help},
     {.name = "destroy",    .description = "Kill all running applications",     .arg_count = 0, .executor = &cmd_destroy},
     {.name = "launch",     .description = "Launch an app by Title ID",         .arg_count = 1, .executor = &cmd_launch},
     {.name = "kill",       .description = "Kill an app by Title ID",           .arg_count = 1, .executor = &cmd_kill},
-    {.name = "reboot",     .description = "Reboot the console",                .arg_count = 0, .executor = &cmd_reboot},
+    {.name = "ftpstatus",  .description = "Show FTP clients and transfer state", .arg_count = 0, .executor = &cmd_ftpstatus},
+    {.name = "ftpreset",   .description = "Abort stranded FTP clients",        .arg_count = 0, .executor = &cmd_ftpreset},
+    {.name = "reboot",     .description = "Reboot only when FTP is quiescent",  .arg_count = 0, .executor = &cmd_reboot},
     {.name = "screen",     .description = "Turn the screen on or off",         .arg_count = 1, .executor = &cmd_screen},
     {.name = "battery",    .description = "Show battery percentage",           .arg_count = 0, .executor = &cmd_battery},
-    {.name = "screenshot", .description = "Take screenshot (Time-stamped)",    .arg_count = 0, .executor = &cmd_screenshot}
+    {.name = "screenshot", .description = "Trigger a SceShell screenshot",     .arg_count = 0, .executor = &cmd_screenshot}
 };
+
+static void append_response(char *res_msg, size_t res_msg_size,
+                            const char *format, ...)
+{
+  size_t used = 0;
+  while (used < res_msg_size && res_msg[used] != '\0')
+    used++;
+  if (used >= res_msg_size)
+    return;
+
+  va_list args;
+  va_start(args, format);
+  vsnprintf(res_msg + used, res_msg_size - used, format, args);
+  va_end(args);
+}
 
 const cmd_definition *cmd_get_definition(char *cmd_name) {
   for (unsigned int i = 0; i < COUNT_OF(cmd_definitions); i++) {
@@ -53,72 +62,126 @@ const cmd_definition *cmd_get_definition(char *cmd_name) {
   return NULL;
 }
 
-void cmd_help(char **arg_list, size_t arg_count, char *res_msg) {
-  char buf[2000] = {0};
-  int longest_cmd = 0;
-
-  for (int i = 0; i < COUNT_OF(cmd_definitions); ++i) {
-    int cmd_length = strlen(cmd_definitions[i].name);
-    if (cmd_length > longest_cmd) longest_cmd = cmd_length;
-  }
-
-  sprintf(buf, "%-*s\t\t%s\n", longest_cmd, "Command", "Description");
-  strcpy(res_msg, buf);
-
-  for (int i = 0; i < COUNT_OF(cmd_definitions); ++i) {
-    sprintf(buf, "%-*s\t\t%s\n", longest_cmd, cmd_definitions[i].name, cmd_definitions[i].description);
-    strcat(res_msg, buf);
-  }
+void cmd_version(char **arg_list, size_t arg_count, char *res_msg,
+                 size_t res_msg_size) {
+  (void)arg_list;
+  (void)arg_count;
+  snprintf(res_msg, res_msg_size,
+           "VitaCompanion-vitadeck protocol=3 hardening=8 "
+           "ftp=LIST,REST_SAFE,BOUNDED_IO,TIMED_IO,SINGLE_FLIGHT,SAFE_REBOOT,RECOVERABLE_CLIENTS,RETR_EXTENT,RETR_ERRORS,STOR_SAFE,CMD_FRAMED\n");
 }
 
-void cmd_kill(char **arg_list, size_t arg_count, char* res_msg) {
+void cmd_help(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
+  (void)arg_list;
+  (void)arg_count;
+  append_response(res_msg, res_msg_size, "Commands");
+
+  for (size_t i = 0; i < COUNT_OF(cmd_definitions); ++i) {
+    append_response(res_msg, res_msg_size, "; %s - %s",
+                    cmd_definitions[i].name, cmd_definitions[i].description);
+  }
+  append_response(res_msg, res_msg_size, "\n");
+}
+
+void cmd_kill(char **arg_list, size_t arg_count, char* res_msg, size_t res_msg_size) {
+  (void)arg_count;
   if (sceAppMgrDestroyAppByName(arg_list[1]) < 0) {
-    strcpy(res_msg, "Error: cannot kill the app. Is the TITLEID correct?\n");
+    snprintf(res_msg, res_msg_size, "Error: cannot kill the app. Is the TITLEID correct?\n");
   } else {
-    strcpy(res_msg, "Killed.\n");
+    snprintf(res_msg, res_msg_size, "Killed.\n");
   }
 }
 
-void cmd_destroy(char **arg_list, size_t arg_count, char *res_msg) {
+void cmd_destroy(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
+  (void)arg_list;
+  (void)arg_count;
   sceAppMgrDestroyOtherApp();
-  strcpy(res_msg, "Apps destroyed.\n");
+  snprintf(res_msg, res_msg_size, "Apps destroyed.\n");
 }
 
-void cmd_launch(char **arg_list, size_t arg_count, char *res_msg) {
+void cmd_launch(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
+  (void)arg_count;
   char uri[32];
-  snprintf(uri, 32, "psgm:play?titleid=%s", arg_list[1]);
+  int uri_length = snprintf(uri, sizeof(uri), "psgm:play?titleid=%s", arg_list[1]);
+  if (uri_length < 0 || (size_t)uri_length >= sizeof(uri)) {
+    snprintf(res_msg, res_msg_size, "Error: TITLEID is too long.\n");
+    return;
+  }
   if (sceAppMgrLaunchAppByUri(0x20000, uri) < 0) {
-    strcpy(res_msg, "Error: cannot launch the app. Is the TITLEID correct?\n");
+    snprintf(res_msg, res_msg_size, "Error: cannot launch the app. Is the TITLEID correct?\n");
   } else {
-    strcpy(res_msg, "Launched.\n");
+    snprintf(res_msg, res_msg_size, "Launched.\n");
   }
 }
 
-void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg) {
-  scePowerRequestColdReset();
-  strcpy(res_msg, "Rebooting...\n");
+void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
+  (void)arg_list;
+  (void)arg_count;
+  int clients = 0;
+  int transfer = 0;
+  if (!ftpvita_prepare_for_reboot(&clients, &transfer)) {
+    snprintf(res_msg, res_msg_size,
+             "Error: FTP busy; reboot refused (clients=%d transfer=%d).\n",
+             clients, transfer);
+    return;
+  }
+  snprintf(res_msg, res_msg_size, "Rebooting...\n");
+  int result = scePowerRequestColdReset();
+  if (result < 0) {
+    ftpvita_cancel_reboot();
+    snprintf(res_msg, res_msg_size,
+             "Error: cold reset request failed (0x%08X).\n", result);
+  }
 }
 
-void cmd_screen(char **arg_list, size_t arg_count, char *res_msg) {
+void cmd_ftpstatus(char **arg_list, size_t arg_count, char *res_msg,
+                   size_t res_msg_size) {
+  (void)arg_list;
+  (void)arg_count;
+  snprintf(res_msg, res_msg_size,
+           "FTP clients=%d transfer=%d reboot_guard=%d timeout_failures=%d\n",
+           ftpvita_get_active_client_count(),
+           ftpvita_has_active_transfer(),
+           ftpvita_is_reboot_quiesced(),
+           ftpvita_get_socket_timeout_failure_count());
+}
+
+void cmd_ftpreset(char **arg_list, size_t arg_count, char *res_msg,
+                  size_t res_msg_size) {
+  (void)arg_list;
+  (void)arg_count;
+  int clients = ftpvita_get_active_client_count();
+  int transfer = ftpvita_has_active_transfer();
+  int aborted = ftpvita_abort_clients();
+  snprintf(res_msg, res_msg_size,
+           "FTP reset requested clients=%d transfer=%d aborted=%d.\n",
+           clients, transfer, aborted);
+}
+
+void cmd_screen(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
+  (void)arg_count;
   char *state = arg_list[1];
   if (!strcmp(state, "on")) {
     scePowerRequestDisplayOn();
-    strcpy(res_msg, "Turning display on...\n");
+    snprintf(res_msg, res_msg_size, "Turning display on...\n");
   } else if (!strcmp(state, "off")) {
     scePowerRequestDisplayOff();
-    strcpy(res_msg, "Turning display off...\n");
+    snprintf(res_msg, res_msg_size, "Turning display off...\n");
   } else {
-    strcpy(res_msg, "Error: param should be 'on' or 'off'\n");
+    snprintf(res_msg, res_msg_size, "Error: param should be 'on' or 'off'\n");
   }
 }
 
-void cmd_battery(char **arg_list, size_t arg_count, char *res_msg) {
+void cmd_battery(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
+    (void)arg_list;
+    (void)arg_count;
     int percent = scePowerGetBatteryLifePercent();
     int charging = scePowerIsBatteryCharging();
     if (percent >= 0) {
-        sprintf(res_msg, "Battery: %d%% (%s)\n", percent, charging ? "Charging" : "Not charging");
+        snprintf(res_msg, res_msg_size, "Battery: %d%% (%s)\n", percent,
+                 charging ? "Charging" : "Not charging");
     } else {
-        strcpy(res_msg, "Error: Could not read battery percentage\n");
+        snprintf(res_msg, res_msg_size, "Error: Could not read battery percentage\n");
     }
 }
 
@@ -186,123 +249,24 @@ static void init_shellshot(void) {
     }
 }
 
-// --- Screenshot Management Logic ---
-
-typedef struct {
-    char latest_path[512];
-    SceDateTime latest_time;
-    int found;
-} ScreenshotSearchCtx;
-
-bool is_newer(SceDateTime *t1, SceDateTime *t2) {
-    if (t1->year != t2->year) return t1->year > t2->year;
-    if (t1->month != t2->month) return t1->month > t2->month;
-    if (t1->day != t2->day) return t1->day > t2->day;
-    if (t1->hour != t2->hour) return t1->hour > t2->hour;
-    if (t1->minute != t2->minute) return t1->minute > t2->minute;
-    return t1->second > t2->second;
-}
-
-// Helper: Custom lowercase to avoid ctype dependencies
-static char custom_tolower(char c) {
-    if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');
-    return c;
-}
-
-// Helper: Custom case-insensitive compare
-int simple_strcasecmp(const char *s1, const char *s2) {
-    const unsigned char *p1 = (const unsigned char *)s1;
-    const unsigned char *p2 = (const unsigned char *)s2;
-    int result;
-    if (p1 == p2) return 0;
-    while ((result = custom_tolower(*p1) - custom_tolower(*p2++)) == 0)
-        if (*p1++ == '\0') break;
-    return result;
-}
-
-// Recursive scanner
-void find_newest_recursive(const char *dir_path, ScreenshotSearchCtx *ctx) {
-    SceUID dfd = sceIoDopen(dir_path);
-    if (dfd < 0) return;
-
-    SceIoDirent dirent;
-    while (sceIoDread(dfd, &dirent) > 0) {
-        if (strcmp(dirent.d_name, ".") == 0 || strcmp(dirent.d_name, "..") == 0) continue;
-
-        char full_path[512];
-        snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, dirent.d_name);
-
-        if (SCE_S_ISDIR(dirent.d_stat.st_mode)) {
-            find_newest_recursive(full_path, ctx);
-        } else {
-            int len = strlen(dirent.d_name);
-            if (len > 4 && simple_strcasecmp(&dirent.d_name[len - 4], ".jpg") == 0) {
-                
-                // Exclude any files already in the root screenshot folder that match our pattern
-                // to prevent recursively "finding" the one we just moved.
-                if (!ctx->found || is_newer(&dirent.d_stat.st_mtime, &ctx->latest_time)) {
-                    ctx->latest_time = dirent.d_stat.st_mtime;
-                    strncpy(ctx->latest_path, full_path, sizeof(ctx->latest_path));
-                    ctx->found = 1;
-                }
-            }
-        }
-    }
-    sceIoDclose(dfd);
-}
-
-
-void cmd_screenshot(char **arg_list, size_t arg_count, char *res_msg) {
+void cmd_screenshot(char **arg_list, size_t arg_count, char *res_msg,
+                    size_t res_msg_size) {
     (void)arg_list;
     (void)arg_count;
 
     init_shellshot();
 
     if (!shellshot_available || shellShot == NULL) {
-        sprintf(res_msg, "[ERROR] shellShot() not available.\n");
+        snprintf(res_msg, res_msg_size, "[ERROR] shellShot() not available.\n");
         return;
     }
 
-    // 1. Take the screenshot
+    /* SceShell owns screenshot encoding and gallery placement.  The host
+     * already snapshots and polls the gallery, so this system plugin must not
+     * sleep, recursively walk the user's photos, or rename personal files. */
     int ret = shellShot();
-    
-    // 2. WAIT for file I/O (3 seconds)
-    sceKernelDelayThread(3 * 1000 * 1000); 
-
-    // 3. Find the newest file
-    ScreenshotSearchCtx ctx;
-    ctx.found = 0;
-    sceClibMemset(&ctx.latest_time, 0, sizeof(SceDateTime));
-    
-    find_newest_recursive("ux0:/picture/SCREENSHOT", &ctx);
-
-    if (ctx.found) {
-        char target_path[128];
-
-        // 4. Generate Filename: YYYY-MM-DD-HHMMSS.jpg
-        // --- ADDED SECONDS (%02d) TO PREVENT DUPLICATE FILE ERRORS ---
-        snprintf(target_path, sizeof(target_path), 
-            "ux0:/picture/SCREENSHOT/%04d-%02d-%02d-%02d%02d%02d.jpg",
-            ctx.latest_time.year,
-            ctx.latest_time.month,
-            ctx.latest_time.day,
-            ctx.latest_time.hour,
-            ctx.latest_time.minute,
-            ctx.latest_time.second
-        );
-
-        // 5. Move (Rename) the file to the root screenshot folder
-        int move_ret = sceIoRename(ctx.latest_path, target_path);
-
-        if (move_ret >= 0) {
-            sprintf(res_msg, 
-                "[OK] Saved: %s\n", target_path);
-        } else {
-            sprintf(res_msg, 
-                "[WARN] Move failed (0x%X).\nSource: %s\nTarget: %s\n", 
-                move_ret, ctx.latest_path, target_path);
-        }
-    } else {
-        sprintf(res_msg, "[WARN] Shot triggered (0x%X), but file not found.\n", ret);
-    }
+    snprintf(res_msg, res_msg_size,
+             ret >= 0 ? "[OK] Screenshot triggered (0x%08X).\n"
+                      : "[ERROR] Screenshot trigger failed (0x%08X).\n",
+             (unsigned int)ret);
 }
