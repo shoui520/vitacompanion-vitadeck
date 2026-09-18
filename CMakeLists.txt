@@ -11,11 +11,28 @@ endif()
 project(vitacompanion)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
+set(FTPVITA_SOURCE_DIR "${CMAKE_SOURCE_DIR}/libftpvita"
+    CACHE PATH "Path to the vendored hardened libftpvita source")
+if(NOT EXISTS "${FTPVITA_SOURCE_DIR}/ftpvita.c")
+  message(FATAL_ERROR
+    "Hardened libftpvita source not found at ${FTPVITA_SOURCE_DIR}; "
+    "set FTPVITA_SOURCE_DIR explicitly")
+endif()
+
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -Wall -O3 -fno-pic -fno-PIC -std=gnu99")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fno-rtti -fno-exceptions")
 
 include_directories(
+  ${FTPVITA_SOURCE_DIR}
 )
+
+add_library(ftpvita_local STATIC
+  ${FTPVITA_SOURCE_DIR}/ftpvita.c
+  ${FTPVITA_SOURCE_DIR}/ftpvita.h
+  ${FTPVITA_SOURCE_DIR}/ftpvita_parse.h
+  ${FTPVITA_SOURCE_DIR}/ftpvita_retr.h
+  ${FTPVITA_SOURCE_DIR}/ftpvita_store.h)
+target_compile_options(ftpvita_local PRIVATE -Wall -O3 -std=gnu99 -fno-pic -fno-PIC)
 
 link_directories(
   ${CMAKE_CURRENT_BINARY_DIR}
@@ -38,7 +55,7 @@ add_executable(vitacompanion
 target_link_libraries(vitacompanion
   taipool
   taihen_stub
-  ftpvita
+  ftpvita_local
   k
   gcc
   SceLibKernel_stub_weak
