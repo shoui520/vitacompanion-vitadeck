@@ -1,4 +1,5 @@
 #include "cmd_definitions.h"
+#include "package_installer.h"
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -23,11 +24,22 @@
 #include <psp2/kernel/modulemgr.h>
 
 #define COUNT_OF(arr) (sizeof(arr) / sizeof(arr[0]))
+#define SCE_APPMGR_APP_ID_ACTIVE (-4)
+#define FOREGROUND_TITLE_ID_SIZE (SCE_APPMGR_MAX_APP_NAME_LENGTH + 1)
+#define LAUNCH_CONFIRM_ATTEMPTS (80)
+#define LAUNCH_CONFIRM_INTERVAL_US (100 * 1000)
+
+/* This SceShell-facing export is present in SceAppMgr_stub but omitted from
+ * VitaSDK's public appmgr.h.  -4 is Sony's ACTIVE app selector; PSVshell
+ * uses the same AppMgr query chain when tracking the foreground process. */
+extern SceInt32 sceAppMgrGetAppIdByAppId(SceInt32 app_id);
 
 const cmd_definition cmd_definitions[] = {
     {.name = "version",    .description = "Show protocol and hardening version", .arg_count = 0, .executor = &cmd_version},
     {.name = "help",       .description = "Display this help screen",          .arg_count = 0, .executor = &cmd_help},
     {.name = "destroy",    .description = "Kill all running applications",     .arg_count = 0, .executor = &cmd_destroy},
+    {.name = "foreground", .description = "Show the foreground title ID",      .arg_count = 0, .executor = &cmd_foreground},
+    {.name = "install",    .description = "Install and promote a VPK",          .arg_count = 1, .executor = &cmd_install},
     {.name = "launch",     .description = "Launch an app by Title ID",         .arg_count = 1, .executor = &cmd_launch},
     {.name = "kill",       .description = "Kill an app by Title ID",           .arg_count = 1, .executor = &cmd_kill},
     {.name = "ftpstatus",  .description = "Show FTP clients and transfer state", .arg_count = 0, .executor = &cmd_ftpstatus},
@@ -67,8 +79,9 @@ void cmd_version(char **arg_list, size_t arg_count, char *res_msg,
   (void)arg_list;
   (void)arg_count;
   snprintf(res_msg, res_msg_size,
-           "VitaCompanion-vitadeck protocol=3 hardening=8 "
-           "ftp=LIST,REST_SAFE,BOUNDED_IO,TIMED_IO,SINGLE_FLIGHT,SAFE_REBOOT,RECOVERABLE_CLIENTS,RETR_EXTENT,RETR_ERRORS,STOR_SAFE,CMD_FRAMED\n");
+           "VitaCompanion-vitadeck protocol=4 hardening=9 "
+           "ftp=LIST,REST_SAFE,BOUNDED_IO,TIMED_IO,SINGLE_FLIGHT,SAFE_REBOOT,RECOVERABLE_CLIENTS,RETR_EXTENT,RETR_ERRORS,STOR_SAFE,CMD_FRAMED "
+           "app=FOREGROUND,CONFIRMED_LAUNCH,VPK_INSTALL\n");
 }
 
 void cmd_help(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
@@ -99,6 +112,69 @@ void cmd_destroy(char **arg_list, size_t arg_count, char *res_msg, size_t res_ms
   snprintf(res_msg, res_msg_size, "Apps destroyed.\n");
 }
 
+static int get_foreground_title_id(char *title_id, size_t title_id_size)
+{
+  if (title_id == NULL || title_id_size < FOREGROUND_TITLE_ID_SIZE)
+    return SCE_APPMGR_ERROR_INVALID;
+
+  memset(title_id, 0, title_id_size);
+  SceInt32 app_id = sceAppMgrGetAppIdByAppId(SCE_APPMGR_APP_ID_ACTIVE);
+  if (app_id <= 0) {
+    snprintf(title_id, title_id_size, "main");
+    return 0;
+  }
+
+  SceUID pid = sceAppMgrGetProcessIdByAppIdForShell(app_id);
+  if (pid < 0)
+    return pid;
+
+  int result = sceAppMgrGetNameById(pid, title_id);
+  title_id[title_id_size - 1] = '\0';
+  return result;
+}
+
+static bool title_ids_equal(const char *left, const char *right)
+{
+  while (*left != '\0' && *right != '\0') {
+    char left_char = *left++;
+    char right_char = *right++;
+    if (left_char >= 'a' && left_char <= 'z')
+      left_char -= 'a' - 'A';
+    if (right_char >= 'a' && right_char <= 'z')
+      right_char -= 'a' - 'A';
+    if (left_char != right_char)
+      return false;
+  }
+  return *left == *right;
+}
+
+void cmd_foreground(char **arg_list, size_t arg_count, char *res_msg,
+                    size_t res_msg_size) {
+  (void)arg_list;
+  (void)arg_count;
+  char title_id[FOREGROUND_TITLE_ID_SIZE];
+  int result = get_foreground_title_id(title_id, sizeof(title_id));
+  if (result < 0) {
+    snprintf(res_msg, res_msg_size,
+             "Error: cannot read foreground title ID (0x%08X).\n", result);
+    return;
+  }
+  snprintf(res_msg, res_msg_size, "Foreground: %s\n", title_id);
+}
+
+void cmd_install(char **arg_list, size_t arg_count, char *res_msg,
+                 size_t res_msg_size) {
+  (void)arg_count;
+  char title_id[12] = {0};
+  int result = install_vpk(arg_list[1], title_id, sizeof(title_id));
+  if (result < 0) {
+    snprintf(res_msg, res_msg_size,
+             "Error: VPK installation failed (0x%08X).\n", result);
+    return;
+  }
+  snprintf(res_msg, res_msg_size, "Installed: %s\n", title_id);
+}
+
 void cmd_launch(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
   (void)arg_count;
   char uri[32];
@@ -107,11 +183,27 @@ void cmd_launch(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg
     snprintf(res_msg, res_msg_size, "Error: TITLEID is too long.\n");
     return;
   }
-  if (sceAppMgrLaunchAppByUri(0x20000, uri) < 0) {
-    snprintf(res_msg, res_msg_size, "Error: cannot launch the app. Is the TITLEID correct?\n");
-  } else {
-    snprintf(res_msg, res_msg_size, "Launched.\n");
+  int result = sceAppMgrLaunchAppByUri(0x20000, uri);
+  if (result < 0) {
+    snprintf(res_msg, res_msg_size,
+             "Error: launch request failed for %s (0x%08X).\n",
+             arg_list[1], result);
+    return;
   }
+
+  char foreground[FOREGROUND_TITLE_ID_SIZE] = "unknown";
+  for (int attempt = 0; attempt < LAUNCH_CONFIRM_ATTEMPTS; attempt++) {
+    result = get_foreground_title_id(foreground, sizeof(foreground));
+    if (result >= 0 && title_ids_equal(foreground, arg_list[1])) {
+      snprintf(res_msg, res_msg_size, "Launched: %s\n", foreground);
+      return;
+    }
+    sceKernelDelayThread(LAUNCH_CONFIRM_INTERVAL_US);
+  }
+
+  snprintf(res_msg, res_msg_size,
+           "Error: launch of %s was not confirmed; foreground=%s.\n",
+           arg_list[1], foreground);
 }
 
 void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg, size_t res_msg_size) {
