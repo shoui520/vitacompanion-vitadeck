@@ -20,7 +20,7 @@ cmake --build build
 `FTPVITA_SOURCE_DIR` may select another compatible source directory for
 development, but the default checkout is self-contained.
 The command server reports
-`protocol=3 hardening=8 ftp=LIST,REST_SAFE,BOUNDED_IO,TIMED_IO,SINGLE_FLIGHT,SAFE_REBOOT,RECOVERABLE_CLIENTS,RETR_EXTENT,RETR_ERRORS,STOR_SAFE,CMD_FRAMED`
+`protocol=4 hardening=9 ftp=LIST,REST_SAFE,BOUNDED_IO,TIMED_IO,SINGLE_FLIGHT,SAFE_REBOOT,RECOVERABLE_CLIENTS,RETR_EXTENT,RETR_ERRORS,STOR_SAFE,CMD_FRAMED app=FOREGROUND,CONFIRMED_LAUNCH,VPK_INSTALL`
 through the `version`
 command so automation can reject an old loaded plugin. `REST_SAFE` means FTP resume
 offsets and all other built-in FTP commands use explicit bounded parsers; they
@@ -105,7 +105,9 @@ Note that you need to append a newline character to the command that you send. `
 | Command   | Arguments     | Explanation                  |
 | --------- | ------------- | ---------------------------- |
 | `destroy` | none          | kill all running applications |
-| `launch`  | `<TITLEID>`   | launch an application by id e.g. `launch VHBB00001` to launch the [Vita Homebrew Browser](https://github.com/devnoname120/vhbb) |
+| `foreground` | none       | show the foreground title ID |
+| `install` | `<VPK_PATH>` | extract, validate, and promote a VPK |
+| `launch`  | `<TITLEID>`   | launch an application by id and wait until it is confirmed in the foreground |
 | `reboot`  | none          | reboot the console           |
 | `ftpstatus` | none        | show active FTP clients/transfers |
 | `ftpreset` | none         | abort stranded FTP clients without rebooting |
