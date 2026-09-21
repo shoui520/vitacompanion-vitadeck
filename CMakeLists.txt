@@ -49,6 +49,10 @@ add_executable(vitacompanion
         src/net.h
         src/parser.c
         src/parser.h
+        src/package_installer.c
+        src/package_installer.h
+        src/sha1.c
+        src/sha1.h
         src/cmd_definitions.c
         src/cmd_definitions.h)
 
@@ -66,9 +70,14 @@ target_link_libraries(vitacompanion
   SceIofilemgr_stub_weak
   SceRtc_stub
   SceAppMgr_stub
+  # PromoterUtil is loaded on demand by package_installer.c.  This plugin is
+  # injected into an already-running SceShell process, so its PromoterUtil
+  # imports must be allowed to remain unresolved until that sysmodule loads.
+  ScePromoterUtil_stub_weak
   ScePower_stub
   SceDisplay_stub
   SceKernelModulemgr_stub    # needed for sceKernelGetModuleInfo
+  z
 )
 
 
